@@ -1,0 +1,74 @@
+name: short
+
+on:
+  schedule:
+    - cron: "30 12 * * *"           # todos los días, 09:30 hora Argentina
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Armar el Short pero NO publicar"
+        type: boolean
+        default: true
+      visibility:
+        description: "Visibilidad (config = la de config.yaml)"
+        type: choice
+        options: [config, private, unlisted, public]
+        default: config
+
+concurrency:
+  group: autotube-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Sistema (ffmpeg + tipografía)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-dejavu-core
+
+      - run: pip install -r requirements.txt
+
+      - name: Generar Short
+        env:
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+        run: |
+          ARGS=""
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          V="${{ inputs.visibility }}"; [ -n "$V" ] && [ "$V" != "config" ] && ARGS="$ARGS --visibility $V"
+          python -m autotube.run short $ARGS
+
+      - name: Subir muestra para revisar (solo dry-run)
+        if: ${{ inputs.dry_run == true || inputs.dry_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: short-preview
+          path: |
+            out/**/*.mp4
+            out/**/meta.json
+          retention-days: 3
+
+      - name: Guardar estado
+        if: ${{ success() && inputs.dry_run != true && inputs.dry_run != 'true' }}
+        run: |
+          git config user.name "autotube[bot]"
+          git config user.email "autotube@users.noreply.github.com"
+          git add state/state.json
+          git diff --cached --quiet && exit 0
+          git commit -m "state: short $(date -u +%F)"
+          git pull --rebase -q
+          git push

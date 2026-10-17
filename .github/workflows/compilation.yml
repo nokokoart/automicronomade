@@ -1,0 +1,81 @@
+name: compilation
+
+on:
+  schedule:
+    - cron: "0 15 * * 2,5"          # martes y viernes, 12:00 hora Argentina (15:00 UTC)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Armar el video pero NO publicar"
+        type: boolean
+        default: true
+      kind:
+        description: "Tipo de compilado"
+        type: choice
+        options: [auto, album, mix]
+        default: auto
+      visibility:
+        description: "Visibilidad (config = la de config.yaml)"
+        type: choice
+        options: [config, private, unlisted, public]
+        default: config
+
+concurrency:
+  group: autotube-state            # un solo job a la vez toca el estado
+  cancel-in-progress: false
+
+permissions:
+  contents: write                  # para guardar state/state.json
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Sistema (ffmpeg + tipografía)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-dejavu-core
+
+      - run: pip install -r requirements.txt
+
+      - name: Generar compilado
+        env:
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+        run: |
+          ARGS=""
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          K="${{ inputs.kind }}"; [ -n "$K" ] && [ "$K" != "auto" ] && ARGS="$ARGS --kind $K"
+          V="${{ inputs.visibility }}"; [ -n "$V" ] && [ "$V" != "config" ] && ARGS="$ARGS --visibility $V"
+          python -m autotube.run compilation $ARGS
+
+      - name: Subir muestra para revisar (solo dry-run)
+        if: ${{ inputs.dry_run == true || inputs.dry_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: compilation-preview
+          path: |
+            out/**/preview.mp4
+            out/**/*-thumb.jpg
+            out/**/meta.json
+          retention-days: 3
+
+      - name: Guardar estado
+        if: ${{ success() && inputs.dry_run != true && inputs.dry_run != 'true' }}
+        run: |
+          git config user.name "autotube[bot]"
+          git config user.email "autotube@users.noreply.github.com"
+          git add state/state.json
+          git diff --cached --quiet && exit 0
+          git commit -m "state: compilation $(date -u +%F)"
+          git pull --rebase -q
+          git push

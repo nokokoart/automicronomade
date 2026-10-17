@@ -1,0 +1,6 @@
+google-api-python-client>=2.140
+google-auth>=2.30
+requests>=2.32
+PyYAML>=6.0
+numpy>=1.26
+Pillow>=10.4

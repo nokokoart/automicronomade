@@ -1,0 +1,20 @@
+# Ajustes por release (opcional). La clave es el nombre EXACTO de la carpeta en Drive.
+# Todo lo que no pongas acá se deduce del nombre de la carpeta.
+#
+# Campos posibles:
+#   title:        título que sale en el video
+#   artists:      artistas que salen en el video y en la miniatura
+#   bandcamp_url: link exacto del release en Bandcamp (si falta, usa label.bandcamp_url)
+#   enabled:      false para sacarlo del circuito
+#
+# Ejemplos (descomentá y completá con los links reales):
+releases: {}
+#  "Wami - Galaxias - Micronomade & Wallar":
+#    title: "Galaxias"
+#    artists: "Micronomade & Wallar"
+#    bandcamp_url: "https://wami.bandcamp.com/album/<slug-real>"
+#  "Wami - Afrikan Dub feat. Maria Powah - SUBE LA MONTAÑA":
+#    title: "SUBE LA MONTAÑA"
+#    artists: "Afrikan Dub feat. Maria Powah"
+#  "Wami - 10 Pounds of Collie RMX & DUB - ...":
+#    enabled: false      # ejemplo: remix de un tema de terceros, mejor no automatizarlo

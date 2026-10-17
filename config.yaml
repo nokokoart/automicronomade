@@ -1,0 +1,90 @@
+# automicronomade — configuración
+# Los secretos NO van acá: se cargan como secrets del repo (ver README).
+
+timezone: America/Argentina/Buenos_Aires
+
+source:
+  type: drive                  # drive | local (local es solo para pruebas)
+  # Solo la carpeta del sello. NO pongas "Musica de Backup": ahí hay material de otras personas.
+  music_folder_ids:
+    - "1ZLDZiXu_ZJd644zjT2UU7WQ5pcpiSNs3"   # wami backup
+  # Carpeta opcional con visuales extra (subcarpetas: landscape/, portrait/, loops/). Vacío = solo portadas.
+  visuals_folder_id: ""
+  local_root: ""               # solo para source.type: local
+  audio_ext: [".wav", ".mp3", ".flac", ".aif", ".aiff", ".m4a", ".ogg"]
+  # Carpetas o archivos cuyo nombre contenga alguno de estos textos se ignoran.
+  skip_name_patterns: ["stem", "acapella", "a cappella", "demo", "sketch", "preview", "backup de"]
+  min_track_seconds: 45
+
+label:
+  name: "Wami Records"
+  artist: "Micronomade Dub"
+  bandcamp_url: "https://wami.bandcamp.com"
+  utm_source: "youtube"
+  # Frase de presentación en la descripción (opcional; si falta se usa una genérica sin ubicación).
+  tagline_es: "Wami Records — sello independiente de dub y soundsystem desde Santa Fe, Argentina."
+  tagline_en: "Wami Records — independent dub & soundsystem label from Santa Fe, Argentina."
+
+# Un bloque por canal de YouTube. Con un solo canal conectado en Zernio / Buffer
+# los ids pueden quedar vacíos y se detectan solos.
+channels:
+  - name: main
+    zernio_account_id: ""
+    buffer_channel_id: ""
+
+audio:
+  loudnorm: true               # parejo entre temas
+  target_lufs: -14
+  fade_seconds: 1.0
+
+compilation:
+  kinds_weights: { album: 1, mix: 1 }   # album = un release completo; mix = temas de varios releases
+  mix_minutes: [55, 85]
+  min_mix_minutes: 20          # si el catálogo no da para esto, el mix falla en vez de publicar algo corto
+  min_album_minutes: 12
+  fps: 24
+  size: [1920, 1080]
+  loop_seconds: 24
+  breathing_zoom: 0.045        # respiración lenta de la imagen (0 = estática)
+  block_minutes: 3.0           # cada cuánto cambia de imagen si hay varias
+
+short:
+  seconds: [22, 30]
+  fps: 30
+  size: [1080, 1920]
+  min_track_seconds: 75
+  bass_zoom: 0.07              # cuánto "late" la imagen con el bajo
+  bass_cutoff_hz: 140
+
+publish:
+  # Arrancá en private: revisás los primeros videos y después pasás a public.
+  visibility: private          # private | unlisted | public
+  category_id: "10"            # Music
+  made_for_kids: false
+  contains_ai_visuals: false   # ponelo en true si los visuales son generados con IA y realistas
+  zernio:
+    base_url: "https://zernio.com/api/v1"
+    timezone: "America/Argentina/Buenos_Aires"
+    publish_now: true
+  buffer:
+    api_url: "https://api.buffer.com"
+    mode: addToQueue           # addToQueue | customScheduled
+    delay_hours: 3             # solo para customScheduled
+  shorts_publisher: buffer     # buffer | zernio
+  long_publisher: zernio
+
+meta:
+  tags: ["dub", "roots dub", "reggae", "soundsystem", "dub music", "wami records", "micronomade dub", "bass music"]
+  hashtags: ["#dub", "#rootsdub", "#soundsystem"]
+  title_templates:
+    album:
+      - "{title} — Full Album | {artist} | {label}"
+      - "{title} · Full EP Stream | Roots Dub | {label}"
+    mix:
+      - "{minutes} Min of Heavy Roots Dub | Soundsystem Mix | {label}"
+      - "Dub Session for Deep Focus & Bass | {artist} | {label}"
+      - "Soundsystem Dub Mix — {minutes} Minutes of Low End | {label}"
+      - "Deep Dub for Late Nights | {minutes} Min Mix | {artist}"
+    short:
+      - "{track} — {artist} #dub #soundsystem"
+      - "{track} | dub for the low end #shorts"
