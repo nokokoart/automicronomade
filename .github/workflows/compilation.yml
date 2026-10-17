@@ -1,8 +1,10 @@
 name: compilation
 
 on:
-  schedule:
-    - cron: "0 15 * * 2,5"          # martes y viernes, 12:00 hora Argentina (15:00 UTC)
+  # Apagado a propósito: Buffer no publica videos largos. Cuando haya un publicador para largos
+  # (publish.long_publisher: zernio en config.yaml), descomentá estas dos líneas:
+  # schedule:
+  #   - cron: "0 15 * * 2,5"        # martes y viernes, 12:00 hora Argentina (15:00 UTC)
   workflow_dispatch:
     inputs:
       dry_run:

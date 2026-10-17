@@ -20,7 +20,7 @@ import yaml
 from . import meta as metamod
 from . import render
 from .audio import FFmpegError, probe_seconds
-from .publish import Buffer, PublishError, Zernio
+from .publish import Buffer, Cloudinary, PublishError, Zernio
 from .sources import Release, Source, Track, make_source
 from .state import State
 
@@ -126,6 +126,36 @@ def do_catalog(releases: list[Release]) -> None:
         log(f"⚠ Sin cover.jpg: {', '.join(no_cover)} (no se podrán usar en videos)")
 
 
+def cleanup_hosted(host: Cloudinary, state: State) -> None:
+    """Borra del hosting los Shorts viejos (Buffer los bajó hace rato). Si falla uno, sigue: no es crítico."""
+    for pid in state.expired_hosted(host.keep_days):
+        try:
+            host.delete(pid)
+            state.drop_hosted(pid)
+            log(f"· hosting: borrado {pid}")
+        except PublishError as e:
+            log(f"⚠ no pude borrar {pid} del hosting ({e}); lo reintento en la próxima corrida")
+
+
+def publish_short_via_buffer(cfg: dict, chan: dict, state: State, video: Path, name: str,
+                             md: dict, pub: dict) -> dict:
+    host, buf = Cloudinary(cfg), Buffer(cfg)
+    channel_id = buf.youtube_channel(chan.get("buffer_channel_id", ""))   # si falla, que sea antes de subir
+    cleanup_hosted(host, state)
+    url, pid = host.upload(video, name)
+    state.add_hosted(pid)
+    try:
+        res = buf.post_short(channel_id, url, md, pub)
+    except PublishError:
+        try:                                    # no dejar basura si Buffer rechazó el post
+            host.delete(pid)
+        except PublishError:
+            pass
+        state.drop_hosted(pid)
+        raise
+    return {**res, "hosted": pid}
+
+
 def finish(args, state: State, entry: dict, out_dir: Path, work: Path, lines: list[str]) -> None:
     (out_dir / "result.json").write_text(json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
     summary(lines)
@@ -161,6 +191,14 @@ def main(argv=None) -> int:
     chan = next((c for c in cfg["channels"] if not args.channel or c["name"] == args.channel), None)
     if not chan:
         log(f"Canal '{args.channel}' no está en config.yaml"); return 2
+
+    if args.mode == "compilation" and not args.dry_run and cfg["publish"].get("long_publisher") == "none":
+        msg = ("publish.long_publisher es 'none': Buffer no publica videos largos de YouTube, así que no armo "
+               "el compilado. Para publicarlos, conectá Zernio y poné long_publisher: zernio. "
+               "Con --dry-run sí se arma para revisarlo.")
+        log(f"ℹ {msg}")
+        summary(["### compilation — omitido", msg])
+        return 0
 
     source = make_source(cfg, overrides, args.local_root or None)
     releases = source.list_releases()
@@ -242,10 +280,7 @@ def main(argv=None) -> int:
                 res = z.post_youtube(z.youtube_account(chan.get("zernio_account_id", "")),
                                      final_video, final_thumb, md, pub)
             elif pub["shorts_publisher"] == "buffer":
-                z = Zernio(cfg)   # solo para alojar el archivo unas horas: Buffer necesita una URL pública
-                url = z.upload(final_video)
-                b = Buffer(cfg)
-                res = b.post_short(b.youtube_channel(chan.get("buffer_channel_id", "")), url, md, pub)
+                res = publish_short_via_buffer(cfg, chan, state, final_video, stamp, md, pub)
             else:
                 z = Zernio(cfg)
                 res = z.post_youtube(z.youtube_account(chan.get("zernio_account_id", "")),

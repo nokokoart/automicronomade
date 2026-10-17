@@ -1,4 +1,4 @@
-"""Publicadores: Zernio (videos largos y Shorts) y Buffer (Shorts).
+"""Publicadores: Buffer (Shorts) + Cloudinary (hosting del archivo) y, opcional, Zernio (videos largos).
 
 Los formatos de pedido salen de la documentación oficial (docs.zernio.com y developers.buffer.com).
 Los puntos que la doc no deja 100 % cerrados están marcados con VERIFICAR y se prueban en la
@@ -92,6 +92,60 @@ class Zernio:
         if post.get("status") == "failed" or plat.get("status") == "failed":
             raise PublishError(f"YouTube rechazó el video: {plat.get('errorMessage', data.get('message'))}")
         return {"id": post.get("_id"), "status": post.get("status"), "url": plat.get("platformPostUrl")}
+
+
+class Cloudinary:
+    """Hosting gratis de los Shorts: Buffer no tiene endpoint de subida y exige una URL pública, directa
+    y estable (sin firmar, sin redirecciones). Se sube con la API firmada de Cloudinary y se borra a los
+    `keep_days` días.
+
+    Secret: CLOUDINARY_URL = cloudinary://<api_key>:<api_secret>@<cloud_name> (se copia del panel).
+    """
+    MAX_BYTES = 100 * 1000 * 1000        # tope de subida directa del plan gratis
+
+    def __init__(self, cfg: dict, url: str | None = None):
+        c = cfg["publish"].get("cloudinary", {})
+        self.base = c.get("api_base", "https://api.cloudinary.com/v1_1").rstrip("/")
+        self.folder = c.get("folder", "autotube").strip("/")
+        self.keep_days = int(c.get("keep_days", 3))
+        raw = url or os.environ.get("CLOUDINARY_URL", "")
+        if not raw:
+            raise PublishError("Falta el secret CLOUDINARY_URL.")
+        m = re.fullmatch(r"cloudinary://([^:@/\s]+):([^:@/\s]+)@([^/\s]+)", raw.strip())
+        if not m:
+            raise PublishError("CLOUDINARY_URL tiene un formato inesperado "
+                               "(esperado: cloudinary://<api_key>:<api_secret>@<cloud_name>).")
+        self.key, self.secret, self.cloud = m.groups()
+
+    def _sign(self, params: dict) -> dict:
+        import hashlib
+        import time
+        p = {**params, "timestamp": int(time.time())}
+        to_sign = "&".join(f"{k}={p[k]}" for k in sorted(p) if p[k] not in ("", None))
+        p["signature"] = hashlib.sha1((to_sign + self.secret).encode()).hexdigest()
+        p["api_key"] = self.key
+        return p
+
+    def upload(self, path: Path, name: str) -> tuple[str, str]:
+        """Sube un video. Devuelve (url_publica, public_id)."""
+        if path.stat().st_size > self.MAX_BYTES:
+            raise PublishError(f"{path.name} pesa {path.stat().st_size/1e6:.0f} MB; el plan gratis de Cloudinary "
+                               "acepta hasta 100 MB por archivo.")
+        public_id = f"{self.folder}/{name}"
+        data = self._sign({"public_id": public_id, "overwrite": "true"})
+        with path.open("rb") as fh:
+            r = requests.post(f"{self.base}/{self.cloud}/video/upload", data=data,
+                              files={"file": (path.name, fh)}, timeout=1800)
+        res = _check(r, "subida a Cloudinary")
+        url = res.get("secure_url")
+        if not url:
+            raise PublishError(f"Cloudinary no devolvió URL: {str(res)[:300]}")
+        return url, res.get("public_id", public_id)
+
+    def delete(self, public_id: str) -> None:
+        data = self._sign({"public_id": public_id, "invalidate": "true"})
+        _check(requests.post(f"{self.base}/{self.cloud}/video/destroy", data=data, timeout=TIMEOUT),
+               f"borrar {public_id}")
 
 
 class Buffer:

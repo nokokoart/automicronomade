@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HISTORY_LIMIT = 400
@@ -15,7 +15,7 @@ def now_iso() -> str:
 class State:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.data = {"releases": {}, "tracks": {}, "history": [], "counters": {}}
+        self.data = {"releases": {}, "tracks": {}, "history": [], "counters": {}, "hosted": []}
         if self.path.exists():
             try:
                 self.data.update(json.loads(self.path.read_text(encoding="utf-8")))
@@ -41,6 +41,17 @@ class State:
     def bump(self, name: str) -> int:
         self.data["counters"][name] = self.counter(name) + 1
         return self.data["counters"][name]
+
+    # -- archivos alojados temporalmente (Cloudinary) -----------------------
+    def add_hosted(self, public_id: str) -> None:
+        self.data["hosted"].append({"id": public_id, "at": now_iso()})
+
+    def expired_hosted(self, days: float) -> list[str]:
+        limit = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        return [h["id"] for h in self.data["hosted"] if h["at"] <= limit]
+
+    def drop_hosted(self, public_id: str) -> None:
+        self.data["hosted"] = [h for h in self.data["hosted"] if h["id"] != public_id]
 
     def log(self, entry: dict) -> None:
         entry = {"at": now_iso(), **entry}

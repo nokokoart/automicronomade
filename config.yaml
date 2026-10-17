@@ -68,10 +68,20 @@ publish:
     publish_now: true
   buffer:
     api_url: "https://api.buffer.com"
-    mode: addToQueue           # addToQueue | customScheduled
+    # customScheduled = sale `delay_hours` después de armarse (no depende de los horarios de tu cola de Buffer).
+    # addToQueue = entra en el próximo horario libre de tu cola de Buffer.
+    mode: customScheduled      # addToQueue | customScheduled
     delay_hours: 3             # solo para customScheduled
+  # Buffer no aloja archivos: necesita una URL pública y estable. Cloudinary (plan gratis) la da.
+  cloudinary:
+    api_base: "https://api.cloudinary.com/v1_1"
+    folder: autotube
+    keep_days: 3               # se borran del hosting pasados estos días (Buffer ya lo bajó hace rato)
+  # Buffer solo publica Shorts de YouTube (no videos largos).
   shorts_publisher: buffer     # buffer | zernio
-  long_publisher: zernio
+  # none = no se publican compilados largos (el workflow `compilation` queda solo para pruebas en seco).
+  # zernio = se publican por Zernio (hace falta ZERNIO_API_KEY y el canal verificado por teléfono).
+  long_publisher: none         # none | zernio
 
 meta:
   tags: ["dub", "roots dub", "reggae", "soundsystem", "dub music", "wami records", "micronomade dub", "bass music"]

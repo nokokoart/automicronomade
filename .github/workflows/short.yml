@@ -46,6 +46,7 @@ jobs:
           GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          CLOUDINARY_URL: ${{ secrets.CLOUDINARY_URL }}
         run: |
           ARGS=""
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"

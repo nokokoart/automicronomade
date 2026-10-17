@@ -4,7 +4,10 @@
 """
 from __future__ import annotations
 
+import email
+import hashlib
 import json
+import os
 import random
 import sys
 import tempfile
@@ -12,14 +15,15 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from autotube import meta
-from autotube.publish import Buffer, PublishError, Zernio
-from autotube.run import spread_by_release
+from autotube.publish import Buffer, Cloudinary, PublishError, Zernio
+from autotube.run import main as run_main, publish_short_via_buffer, spread_by_release
 from autotube.sources import FileRef, Release, Track, parse_release_name, parse_track_name, build_release
 from autotube.state import State
 
@@ -119,6 +123,7 @@ class FakeServer(BaseHTTPRequestHandler):
     log: list = []
     fail_post = False
     buffer_error = False
+    SECRET = "secret"
 
     def _body(self):
         n = int(self.headers.get("Content-Length", 0))
@@ -141,9 +146,42 @@ class FakeServer(BaseHTTPRequestHandler):
         FakeServer.log.append(("PUT", self.path, len(body), self.headers.get("Content-Type")))
         self._send(200)
 
+    def _sig_ok(self, fields: dict) -> bool:
+        p = {k: v for k, v in fields.items() if k not in ("signature", "api_key")}
+        to_sign = "&".join(f"{k}={p[k]}" for k in sorted(p)) + self.SECRET
+        return fields.get("signature") == hashlib.sha1(to_sign.encode()).hexdigest()
+
+    def _cloudinary(self, raw: bytes, port: int):
+        if self.path.endswith("/video/upload"):
+            msg = email.message_from_bytes(f"Content-Type: {self.headers['Content-Type']}\r\n\r\n".encode() + raw)
+            fields, size = {}, 0
+            for part in msg.get_payload():
+                name = part.get_param("name", header="content-disposition")
+                payload = part.get_payload(decode=True) or b""
+                if name == "file":
+                    size = len(payload)
+                else:
+                    fields[name] = payload.decode()
+            FakeServer.log.append(("CLD_UP", self.path, fields, size))
+            if not self._sig_ok(fields):
+                return self._send(401, {"error": {"message": "Invalid Signature"}})
+            pid = fields["public_id"]
+            self._send(200, {"public_id": pid, "secure_url": f"http://127.0.0.1:{port}/res/{pid}.mp4"})
+        elif self.path.endswith("/video/destroy"):
+            fields = {k: v[0] for k, v in parse_qs(raw.decode()).items()}
+            FakeServer.log.append(("CLD_DEL", self.path, fields))
+            if not self._sig_ok(fields):
+                return self._send(401, {"error": {"message": "Invalid Signature"}})
+            self._send(200, {"result": "ok"})
+        else:
+            self._send(404)
+
     def do_POST(self):
-        body = json.loads(self._body() or b"{}")
+        raw = self._body()
         port = self.server.server_address[1]
+        if self.path.startswith("/cld/"):
+            return self._cloudinary(raw, port)
+        body = json.loads(raw or b"{}")
         if self.path == "/v1/media/presign":
             FakeServer.log.append(("PRESIGN", body))
             self._send(200, {"uploadUrl": f"http://127.0.0.1:{port}/put/{body['filename']}",
@@ -183,6 +221,8 @@ class Publishers(unittest.TestCase):
         cls.cfg = json.loads(json.dumps(CFG))
         cls.cfg["publish"]["zernio"]["base_url"] = f"http://127.0.0.1:{cls.port}/v1"
         cls.cfg["publish"]["buffer"]["api_url"] = f"http://127.0.0.1:{cls.port}/"
+        cls.cfg["publish"]["cloudinary"]["api_base"] = f"http://127.0.0.1:{cls.port}/cld"
+        cls.cld_url = "cloudinary://key:secret@democloud"
         cls.tmp = tempfile.TemporaryDirectory()
         cls.video = Path(cls.tmp.name) / "v.mp4"; cls.video.write_bytes(b"x" * 5000)
         cls.thumb = Path(cls.tmp.name) / "t.jpg"; cls.thumb.write_bytes(b"y" * 100)
@@ -221,7 +261,8 @@ class Publishers(unittest.TestCase):
             z.post_youtube("acc1", self.video, None, self.md, self.pub)
 
     def test_buffer_short_queue(self):
-        b = Buffer(self.cfg, api_key="k")
+        cfg = json.loads(json.dumps(self.cfg)); cfg["publish"]["buffer"]["mode"] = "addToQueue"
+        b = Buffer(cfg, api_key="k")
         self.assertEqual(b.youtube_channel(), "ch1")            # elige solo el canal de YouTube
         res = b.post_short("ch1", "http://x/pub/s.mp4", self.md, self.pub)
         self.assertEqual(res["id"], "b1")
@@ -233,7 +274,8 @@ class Publishers(unittest.TestCase):
         self.assertEqual(inp["metadata"]["youtube"]["title"], "T")
 
     def test_buffer_custom_schedule_sends_dueAt(self):
-        cfg = json.loads(json.dumps(self.cfg)); cfg["publish"]["buffer"]["mode"] = "customScheduled"
+        self.assertEqual(self.cfg["publish"]["buffer"]["mode"], "customScheduled")      # es el modo por defecto
+        cfg = self.cfg
         Buffer(cfg, api_key="k").post_short("ch1", "http://x/s.mp4", self.md, self.pub)
         inp = next(x[1] for x in FakeServer.log if x[0] == "GQL")["variables"]["input"]
         self.assertEqual(inp["mode"], "customScheduled")
@@ -251,6 +293,94 @@ class Publishers(unittest.TestCase):
             Zernio(self.cfg)
         with self.assertRaisesRegex(PublishError, "BUFFER_API_KEY"):
             Buffer(self.cfg)
+        os.environ.pop("CLOUDINARY_URL", None)
+        with self.assertRaisesRegex(PublishError, "CLOUDINARY_URL"):
+            Cloudinary(self.cfg)
+        with self.assertRaisesRegex(PublishError, "formato"):
+            Cloudinary(self.cfg, url="https://nope")
+
+    # -- Cloudinary --------------------------------------------------------------
+    def test_cloudinary_upload_is_signed_and_returns_public_url(self):
+        c = Cloudinary(self.cfg, url=self.cld_url)
+        url, pid = c.upload(self.video, "2026-10-17-short-1")
+        self.assertEqual(pid, "autotube/2026-10-17-short-1")
+        self.assertTrue(url.endswith("/res/autotube/2026-10-17-short-1.mp4"))
+        up = next(x for x in FakeServer.log if x[0] == "CLD_UP")
+        self.assertIn("/democloud/video/upload", up[1])
+        self.assertEqual(up[3], 5000)                               # el archivo viajó completo
+        self.assertEqual(up[2]["api_key"], "key")
+
+    def test_cloudinary_bad_secret_is_reported(self):
+        c = Cloudinary(self.cfg, url="cloudinary://key:otro@democloud")
+        with self.assertRaisesRegex(PublishError, "Invalid Signature"):
+            c.upload(self.video, "x")
+
+    def test_cloudinary_delete_is_signed(self):
+        Cloudinary(self.cfg, url=self.cld_url).delete("autotube/viejo")
+        d = next(x for x in FakeServer.log if x[0] == "CLD_DEL")
+        self.assertEqual(d[2]["public_id"], "autotube/viejo")
+
+    def test_cloudinary_rejects_files_over_plan_limit(self):
+        big = Path(self.tmp.name) / "big.mp4"; big.write_bytes(b"z" * 10)
+        c = Cloudinary(self.cfg, url=self.cld_url); c.MAX_BYTES = 5
+        with self.assertRaisesRegex(PublishError, "100 MB"):
+            c.upload(big, "big")
+
+
+class ShortViaBuffer(unittest.TestCase):
+    """Flujo completo del Short: hosting → Buffer, con limpieza de lo viejo y sin dejar basura si falla."""
+
+    @classmethod
+    def setUpClass(cls):
+        Publishers.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        Publishers.tearDownClass.__func__(cls)
+
+    def setUp(self):
+        FakeServer.log = []; FakeServer.buffer_error = False
+        os.environ["CLOUDINARY_URL"] = self.cld_url
+        os.environ["BUFFER_API_KEY"] = "k"
+        self.state = State(Path(self.tmp.name) / f"st-{id(self)}.json")
+        self.md = {"title": "T", "description": "D", "tags": []}
+
+    def tearDown(self):
+        os.environ.pop("CLOUDINARY_URL", None); os.environ.pop("BUFFER_API_KEY", None)
+
+    def test_buffer_gets_the_cloudinary_url_and_state_tracks_it(self):
+        res = publish_short_via_buffer(self.cfg, {}, self.state, self.video, "2026-10-17-short-1",
+                                       self.md, self.cfg["publish"])
+        self.assertEqual(res["hosted"], "autotube/2026-10-17-short-1")
+        inp = next(x[1] for x in FakeServer.log if x[0] == "GQL" and "CreatePost" in x[1]["query"])["variables"]["input"]
+        self.assertTrue(inp["assets"][0]["video"]["url"].endswith("/res/autotube/2026-10-17-short-1.mp4"))
+        self.assertEqual([h["id"] for h in self.state.data["hosted"]], ["autotube/2026-10-17-short-1"])
+
+    def test_old_hosted_files_are_deleted_and_recent_ones_kept(self):
+        self.state.data["hosted"] = [{"id": "autotube/viejo", "at": "2020-01-01T00:00:00+00:00"},
+                                     {"id": "autotube/reciente", "at": meta_now()}]
+        publish_short_via_buffer(self.cfg, {}, self.state, self.video, "nuevo", self.md, self.cfg["publish"])
+        deleted = [x[2]["public_id"] for x in FakeServer.log if x[0] == "CLD_DEL"]
+        self.assertEqual(deleted, ["autotube/viejo"])
+        self.assertEqual(sorted(h["id"] for h in self.state.data["hosted"]), ["autotube/nuevo", "autotube/reciente"])
+
+    def test_buffer_rejection_cleans_the_upload(self):
+        FakeServer.buffer_error = True
+        with self.assertRaisesRegex(PublishError, "Channel not connected"):
+            publish_short_via_buffer(self.cfg, {}, self.state, self.video, "fallido", self.md, self.cfg["publish"])
+        self.assertEqual([x[2]["public_id"] for x in FakeServer.log if x[0] == "CLD_DEL"], ["autotube/fallido"])
+        self.assertEqual(self.state.data["hosted"], [])
+
+
+def meta_now() -> str:
+    from autotube.state import now_iso
+    return now_iso()
+
+
+class LongVideosDisabled(unittest.TestCase):
+    def test_compilation_is_skipped_without_touching_drive(self):
+        self.assertEqual(CFG["publish"]["long_publisher"], "none")
+        self.assertEqual(run_main(["compilation"]), 0)             # sale antes de listar música
 
 
 if __name__ == "__main__":
